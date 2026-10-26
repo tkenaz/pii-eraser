@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pii-eraser"
+version = "0.1.0"
+description = "Find personal data and secrets in text and code, replace them with stable placeholders, locally."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [{ name = "37lab OÜ", email = "mv@37lab.ai" }]
+keywords = ["pii", "privacy", "gdpr", "secrets", "redaction", "anonymization", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Security",
+    "Topic :: Text Processing",
+]
+dependencies = []
+
+[project.optional-dependencies]
+gliner = ["gliner>=0.2.20"]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+pii-eraser = "pii_eraser.cli:main"
+
+[project.urls]
+Homepage = "https://37lab.ai"
+Repository = "https://github.com/tkenaz/pii-eraser"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pii_eraser"]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]
