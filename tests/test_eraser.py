@@ -14,6 +14,7 @@ from pii_eraser.detectors.validators import iban_ok, luhn_ok, shannon_entropy
 AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 GH_TOKEN = "ghp_" + "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
 RANDOM_B64 = "q8Zr3" + "Kx9Lm2Vb7Tn4Yw1Pc6Hs5Jd0Fg"
+SHORT_RANDOM = "Zq81kLm0" + "9xPw7Rt3Yv"
 PEM = "-----BEGIN RSA " + "PRIVATE KEY-----\nMIIEow\nAAAA\nBBBB\n-----END RSA " + "PRIVATE KEY-----"
 
 
@@ -99,6 +100,35 @@ def test_url_password_only():
 def test_env_style_assignment():
     result = Eraser.for_code().erase(f"export SERVICE_TOKEN={RANDOM_B64}\n")
     assert RANDOM_B64 not in result.text
+
+
+@pytest.mark.parametrize("prefix", ["+", "-", " "])
+@pytest.mark.parametrize("line", [f"API_KEY={SHORT_RANDOM}", f"  password: {SHORT_RANDOM}"])
+def test_bare_assignment_is_caught_as_a_diff_line(prefix, line):
+    # .env and YAML hunks: the unquoted rule was anchored before the diff prefix.
+    result = Eraser.for_code().erase(prefix + line)
+    assert SHORT_RANDOM not in result.text
+
+
+def test_short_random_value_behind_a_secret_key_is_caught():
+    # 18 random chars top out below the 4.2 entropy bar of long strings.
+    assert Eraser.for_code().erase(f"DB_PASSWORD={SHORT_RANDOM}").found
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "+  api_key_env: AIFS_API_KEY_V2",
+        "+  credentials_file: /etc/app/creds_v2.json",
+        "+SECRET_VERSION=v20261029build7",
+        "+TOKEN_AUDIENCE=api2production",
+        "+TOKEN_CLASS=OAuth2BearerToken",
+        "+PASSWORD_HASHER=Argon2idHasher",
+        "+PASSWORD_POLICY=min12chars_upper",
+    ],
+)
+def test_names_behind_a_secret_key_are_not_secrets(line):
+    assert Eraser.for_code().erase(line).found == []
 
 
 def test_hex_hash_is_not_a_secret_but_random_base64_is():
