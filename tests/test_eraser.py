@@ -118,7 +118,7 @@ def test_short_random_value_behind_a_secret_key_is_caught():
 @pytest.mark.parametrize(
     "line",
     [
-        "+  api_key_env: AIFS_API_KEY_V2",
+        "+  api_key_env: GATEWAY_API_KEY_V2",
         "+  credentials_file: /etc/app/creds_v2.json",
         "+SECRET_VERSION=v20261029build7",
         "+TOKEN_AUDIENCE=api2production",
@@ -240,7 +240,7 @@ def test_cli_passes_clean_input(monkeypatch, capsys):
     [
         'MAX_TOKENS = "max_tokens"',
         "patch.dict(os.environ, {'ANTHROPIC_API_KEY': 'test-key'})",
-        '"SEMANTIC_DIFF_API_KEY": "aifs-key",',
+        '"SEMANTIC_DIFF_API_KEY": "gateway-key",',
     ],
 )
 def test_enum_values_and_test_fixtures_are_not_secrets(line):

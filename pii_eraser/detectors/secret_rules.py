@@ -21,7 +21,7 @@ _NOT_A_VALUE = re.compile(
     r"(?:your|my|example|dummy|test|fake|mock|sample|changeme|placeholder|redacted|secret|password|token)[-_\w]*)$",
     re.IGNORECASE,
 )
-# MAX_TOKENS = "max_tokens", "aifs-key": names, not credentials. Costs
+# MAX_TOKENS = "max_tokens", "gateway-key": names, not credentials. Costs
 # letter-only passwords, which in code are rarer than enum values and fixtures.
 _IDENTIFIER = re.compile(r"^[A-Za-z_-]+$")
 
