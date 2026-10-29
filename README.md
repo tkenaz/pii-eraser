@@ -61,6 +61,8 @@ git diff origin/main | pii-eraser --profile code --report --fail-on-secret > /de
 
 The report on stderr lists kind, line and rule, never the original value, so it
 is safe for CI logs. `--fail-on-secret` exits 1 when a secret is found.
+Diff lines are read as they come: added, removed and context lines are all
+checked, since a removed secret still sits in history.
 
 ## What it finds
 
