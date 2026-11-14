@@ -9,11 +9,14 @@ import re
 
 from pii_eraser.detectors.regex import Rule
 from pii_eraser.detectors.validators import (
+    card_span,
     digits_between,
+    iban_labeled_span,
+    iban_printed_span,
     iban_span,
     ip_ok,
-    luhn_ok,
     nino_ok,
+    printed_as_one,
     steuer_id_ok,
     sv_nummer_ok,
 )
@@ -84,9 +87,19 @@ _UK_STREET_TYPE = (
 )
 _UK_POSTCODE = r"[A-Z]{1,2}[0-9lIO][0-9A-Zl]?[ \t]?[0-9lIO][A-Z]{2}"
 
+# What is printed between the groups of one value: a blank, a hyphen, a dot, a slash. No-break and narrow
+# spaces arrive here as blanks (see RegexDetector). A tab divides table columns and is never part of a value.
+_GAP = r"[ .\-/]?"
+# Blank, hyphen or dot, or one line break: account and card numbers wrap, ids do not.
+_GAP_WRAP = r"(?:[ .\-]?|[ \t]*\n[ \t]*)"
+# IBAN-shaped run of letters and digits; the refine function cuts it at the country's registry length.
+_IBAN_RUN = rf"[A-Za-z0-9]{{2}}[0-9OISlB]{{2}}(?:{_GAP_WRAP}[A-Za-z0-9]){{11,30}}"
+# Not inside a token, and not after "x-" or "x.": the third group of a UUID is not where an IBAN starts.
+_IBAN_START = r"(?<![A-Za-z0-9])(?<![A-Za-z0-9][-.])"
+
 PII_RULES = [
-    # ---- email
-    Rule("email_standard", Kind.EMAIL, r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", 0.95, _I, code_safe=True),
+    # ---- email (letters beyond ASCII in the mailbox and in the domain: gärtnerei-beispiel.de)
+    Rule("email_standard", Kind.EMAIL, r"(?<![\w.%+-])[\w.%+-]+@[\w.-]+\.[^\W\d_]{2,}\b", 0.95, _I, code_safe=True),
     # ---- phone
     # +49 / 0049, optional (0), area in brackets or not, groups split by blanks, dashes or a slash.
     Rule(
@@ -132,40 +145,42 @@ PII_RULES = [
         code_safe=True,
     ),
     # ---- financial
+    # A run of digits read from every position where a number can start (the look-ahead lets candidates
+    # overlap, so a phone number standing before a card in a table row does not hide it). The run is taken
+    # one digit longer than the longest card, so card_span can see that a number goes on. It cuts the run at
+    # a length the scheme issues and accepts it only in a card's print layout and on the Luhn digit.
     Rule(
-        "cc_visa",
+        "card",
         Kind.FINANCIAL,
-        r"\b4\d{3}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b",
+        rf"(?<![\w.+-])(?=(\d(?:{_GAP_WRAP}\d){{12,19}}))",
         0.97,
-        _I,
+        re.MULTILINE,
         code_safe=True,
-        validate=luhn_ok,
-    ),
-    Rule(
-        "cc_mastercard",
-        Kind.FINANCIAL,
-        r"\b5[1-5]\d{2}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b",
-        0.97,
-        _I,
-        code_safe=True,
-        validate=luhn_ok,
-    ),
-    Rule(
-        "cc_amex", Kind.FINANCIAL, r"\b3[47]\d{2}[-\s]?\d{6}[-\s]?\d{5}\b", 0.97, _I, code_safe=True, validate=luhn_ok
+        refine=card_span,
     ),
     Rule("cc_partial", Kind.FINANCIAL, r"(?:ending\s+in|last\s+(?:4|four)\s*(?:digits)?)[:\s]*\d{4}\b", 0.85, _I),
-    # A run of 4-character groups (blank or one line break between them, as printed and as OCR returns
-    # them); iban_span cuts it at the country's registry length and accepts it only on mod-97, after
-    # reading OCR confusions back. Checksum-proven, so it outranks an NER guess on the same characters.
+    # An IBAN in any grouping and with any separator; iban_span cuts the run at the country's registry length
+    # and accepts it only on mod-97, after reading OCR confusions back. Checksum-proven, so it outranks an
+    # NER guess on the same characters.
     Rule(
         "iban",
         Kind.FINANCIAL,
-        r"(?<![A-Za-z0-9])[A-Za-z0-9]{2}[0-9OISlB]{2}(?:(?:[ \t]?|[ \t]*\n[ \t]*)[A-Za-z0-9]{4}){2,7}"
-        r"(?:(?:[ \t]?|[ \t]*\n[ \t]*)[A-Za-z0-9]{1,4})?(?![A-Za-z0-9])",
+        rf"{_IBAN_START}(?=({_IBAN_RUN}))",
         0.98,
         re.MULTILINE,
         code_safe=True,
         refine=iban_span,
+    ),
+    # Check digits that do not hold (typing or OCR error): still an IBAN when it is printed as one, in groups
+    # of four at the registry length, or when it stands after the word IBAN.
+    Rule("iban_printed", Kind.FINANCIAL, rf"{_IBAN_START}(?=({_IBAN_RUN}))", 0.80, re.MULTILINE, refine=iban_printed_span),
+    Rule(
+        "iban_labeled",
+        Kind.FINANCIAL,
+        rf"(?i:\bI[ ]?BAN\b)[\s:#=\"']{{0,4}}({_IBAN_RUN})",
+        0.85,
+        re.MULTILINE,
+        refine=iban_labeled_span,
     ),
     Rule("account_labeled", Kind.FINANCIAL, r"(?:account|acct|konto)[:\s#]*\d{8,17}", 0.70, _I),
     Rule(
@@ -449,31 +464,31 @@ PII_RULES = [
     Rule(
         "steuer_id",
         Kind.NATIONAL_ID,
-        r"(?<![\d/.,-])[1-9]\d(?:[ \t]?\d{3}){3}(?![\d/-]|[.,]\d)",
+        rf"(?<![\w.,/+-])(?<!\d )(?=([1-9](?:{_GAP}\d){{10}}(?!{_GAP}\d|,\d)))",
         0.90,
         _I,
-        validate=steuer_id_ok,
+        validate=printed_as_one(steuer_id_ok),
     ),
     # German tax number (Steuernummer), state formats 2-3/3-4/4-5 digits with slashes.
     Rule("steuernummer", Kind.NATIONAL_ID, r"(?<![\d/.])\d{2,3}/\d{3,4}/\d{4,5}(?![\d/]|\.\d)", 0.80, _I),
-    # German pension insurance number with its check digit, spaced or not: 43 191171 V 67 2.
+    # German pension insurance number with its check digit, in any grouping: 43 191171 V 67 2, 43-191171-V-672.
     Rule(
         "sv_nummer",
         Kind.NATIONAL_ID,
-        r"(?<![\w])\d{2}[ \t]?\d{6}[ \t]?[A-Z][ \t]?\d{2}[ \t]?\d(?![\w])",
+        rf"(?<![\w/.-])(?=(\d(?:{_GAP}\d){{7}}{_GAP}[A-Za-z](?:{_GAP}\d){{3}}(?!\w)))",
         0.95,
         re.MULTILINE,
         code_safe=True,
-        validate=sv_nummer_ok,
+        validate=printed_as_one(sv_nummer_ok),
     ),
     # UK National Insurance number written in pairs: JG 37 28 59 A.
     Rule(
         "ni_uk_spaced",
         Kind.NATIONAL_ID,
-        r"(?<![\w])[A-Z]{2}[ \t]?\d{2}[ \t]?\d{2}[ \t]?\d{2}[ \t]?[A-D](?![\w])",
+        r"(?<![\w-])[A-Z]{2}(?:[ .\-]?\d{2}){3}[ .\-]?[A-D](?![\w])",
         0.90,
         re.MULTILINE,
-        validate=nino_ok,
+        validate=printed_as_one(nino_ok),
     ),
     # IP addresses. Version strings are kept out by what precedes them (v1.2.3.4, "version 1.2.3.4").
     Rule(

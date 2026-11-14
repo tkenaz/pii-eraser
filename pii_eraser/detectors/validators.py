@@ -22,9 +22,77 @@ def luhn_ok(text: str) -> bool:
     return total % 10 == 0
 
 
+def compact(text: str) -> str:
+    """The value without what is printed between its groups, in upper case."""
+    return "".join(c for c in text if c.isalnum()).upper()
+
+
+def single_separator(text: str) -> bool:
+    """True when the groups of a printed value are divided the same way throughout: by white space, or by one
+    punctuation mark, or not at all. "12 34-56.78" is three numbers that happen to stand together."""
+    kinds = set()
+    for run in re.findall(r"[^A-Za-z0-9]+", text):
+        kinds.add(" " if run.isspace() else run)
+    return len(kinds) <= 1
+
+
+# Issuer ranges (ISO/IEC 7812) and the lengths each scheme issues. Maestro and its 12-15 digit cards are
+# left at 16-19: a 12-digit run starting with 5 or 6 is far more often an order number than a card.
+_CARD_RANGES = (
+    (("34", "37"), (15,)),  # American Express
+    (("4",), (13, 16, 19)),  # Visa
+    (("51", "52", "53", "54", "55"), (16,)),  # Mastercard
+    (("300", "301", "302", "303", "304", "305", "3095", "36", "38", "39"), (14, 15, 16, 17, 18, 19)),  # Diners
+    (("35",), (16, 17, 18, 19)),  # JCB 3528-3589, checked below
+    (("50", "56", "57", "58", "59", "6"), (16, 17, 18, 19)),  # Maestro, Discover, UnionPay
+)
+
+
+def card_lengths(digits: str) -> tuple:
+    """The lengths a card starting like `digits` can have, or () when no scheme issues that start."""
+    if digits[:4].isdigit() and 2221 <= int(digits[:4]) <= 2720:
+        return (16,)  # Mastercard 2-series
+    if digits.startswith("35") and not (digits[:4].isdigit() and 3528 <= int(digits[:4]) <= 3589):
+        return ()
+    for prefixes, lengths in _CARD_RANGES:
+        if digits.startswith(prefixes):
+            return lengths
+    return ()
+
+
+def _card_layout_ok(printed: str) -> bool:
+    """Cards are printed without separators or the way they are embossed: groups of four with a shorter last
+    group, or 4-6-5 and 4-6-4. A row of single digits or of three-digit numbers that happens to satisfy Luhn
+    is a row of numbers."""
+    sizes = [len(group) for group in re.split(r"[^0-9]+", printed)]
+    if len(sizes) == 1 or sizes in ([4, 6, 5], [4, 6, 4]):
+        return True
+    return len(sizes) >= 4 and all(n == 4 for n in sizes[:-1]) and 1 <= sizes[-1] <= 4
+
+
+def card_span(candidate: str) -> Optional[int]:
+    """Length of the payment card number at the start of `candidate`, or None.
+
+    `candidate` is a run of digits with at most one separator between two digits, so it can run on into a
+    following number: the lengths of the scheme decide where the card can end, the cut must fall where the
+    text has a break, the groups must be divided the same way throughout, and the Luhn digit must hold."""
+    positions = [i for i, c in enumerate(candidate) if c.isdigit()]
+    digits = "".join(candidate[i] for i in positions)
+    for length in sorted(card_lengths(digits), reverse=True):
+        if len(digits) < length:
+            continue
+        end = positions[length - 1] + 1
+        if end < len(candidate) and candidate[end].isdigit():
+            continue
+        printed = candidate[:end]
+        if single_separator(printed) and _card_layout_ok(printed) and luhn_ok(digits[:length]):
+            return end
+    return None
+
+
 def iban_ok(text: str) -> bool:
     """ISO 13616 mod-97. Hex constants and enum names that look like IBANs fail it."""
-    s = re.sub(r"\s", "", text).upper()
+    s = compact(text)
     if not re.fullmatch(r"[A-Z]{2}\d{2}[A-Z0-9]{10,30}", s):
         return False
     return _mod97(s)
@@ -62,9 +130,9 @@ _OCR_TO_LETTER = str.maketrans({"0": "O", "1": "I", "5": "S", "8": "B"})
 def iban_span(candidate: str) -> Optional[int]:
     """Length of the IBAN at the start of `candidate`, or None.
 
-    `candidate` is a run of 4-character groups that may be separated by blanks or one line break, so it can
-    run on into a following number: the country's registry length decides where the IBAN ends, and the cut
-    must fall where the text has a break. OCR-confused characters (O/0, I/l/1, S/5, B/8) are read back
+    `candidate` is a run of letters and digits with at most one separator (blank, hyphen, dot, line break)
+    between two of them, so it can run on into a following word or number: the country's registry length
+    decides where the IBAN ends, and the cut must fall where the text has a break. OCR-confused characters (O/0, I/l/1, S/5, B/8) are read back
     before the check digits are tested; a value is accepted only if mod-97 holds afterwards.
     """
     positions = [i for i, c in enumerate(candidate) if c.isalnum()]
@@ -76,8 +144,10 @@ def iban_span(candidate: str) -> Optional[int]:
     if length is None or len(raw) < length:
         return None
     end = positions[length - 1] + 1
-    if end < len(candidate) and not candidate[end].isspace():
+    if end < len(candidate) and candidate[end].isalnum():
         return None  # the registry length cuts through a token: not an IBAN of this country
+    if not single_separator(candidate[:end]) or _goes_on(candidate, end):
+        return None
     value = raw[:length]
     exact = country + value[2:]
     if exact[2:4].isdigit() and exact[4:].isalnum() and _mod97(exact):
@@ -91,6 +161,59 @@ def iban_span(candidate: str) -> Optional[int]:
     )
     fits = all(c.isdigit() if kind == "n" else c.isalpha() for c, kind in zip(bban, shape))
     return end if fits and _mod97(country + check + bban) else None
+
+
+def _goes_on(candidate: str, end: int) -> bool:
+    """The value is cut where the same hyphen or dot that divides its groups is followed by more: the middle
+    of a UUID or of a dotted key, not the end of an account number."""
+    return (
+        end + 1 < len(candidate)
+        and candidate[end] in "-."
+        and candidate[end] in candidate[:end]
+        and candidate[end + 1].isalnum()
+    )
+
+
+def _iban_shape_end(candidate: str) -> Optional[int]:
+    """Where a value of the country's registry length ends in `candidate`, check digits unverified. Without
+    the check digits to prove it, the country code has to be printed in letters: no OCR reading of "51" as SI."""
+    positions = [i for i, c in enumerate(candidate) if c.isalnum()]
+    raw = "".join(candidate[i] for i in positions).upper()
+    length = IBAN_LENGTH.get(raw[:2]) if raw[:2].isalpha() else None
+    if length is None or len(raw) < length:
+        return None
+    end = positions[length - 1] + 1
+    if (end < len(candidate) and candidate[end].isalnum()) or _goes_on(candidate, end):
+        return None
+    value = raw[:length]
+    if sum(c.isdigit() for c in value[2:]) * 10 < (length - 2) * 6:
+        return None  # mostly letters: a word run, not an account number
+    return end if single_separator(candidate[:end]) else None
+
+
+def iban_printed_span(candidate: str) -> Optional[int]:
+    """An IBAN whose check digits do not hold (a typing or OCR error) but which is printed as one: country
+    code, registry length, groups of four divided the same way throughout."""
+    end = _iban_shape_end(candidate)
+    if end is None:
+        return None
+    groups = re.split(r"[^A-Za-z0-9]+", candidate[:end])
+    in_fours = len(groups) > 1 and all(len(g) == 4 for g in groups[:-1]) and 1 <= len(groups[-1]) <= 4
+    return end if in_fours else None
+
+
+def iban_labeled_span(candidate: str) -> Optional[int]:
+    """What stands after the word IBAN and has the country's registry length, whatever its check digits."""
+    return _iban_shape_end(candidate)
+
+
+def printed_as_one(validator):
+    """Validator: `validator` holds for the value and its groups are divided the same way throughout."""
+
+    def ok(text: str) -> bool:
+        return single_separator(text) and validator(text)
+
+    return ok
 
 
 def digits_between(low: int, high: int):
@@ -131,7 +254,7 @@ def sv_nummer_ok(text: str) -> bool:
     """German pension insurance number (Rentenversicherungsnummer / SV-Nummer): area (2), birth date DDMMYY
     (6), initial of the birth name (letter), serial (2), check digit. The letter counts as its alphabet
     position in two digits; weights 2-1-2-5-7-1-2-1-2-1-2-1, cross sums of the products, total mod 10."""
-    s = re.sub(r"\s", "", text).upper()
+    s = compact(text)
     m = re.fullmatch(r"(\d{2})(\d{2})(\d{2})(\d{2})([A-Z])(\d{2})(\d)", s)
     if not m:
         return False
@@ -148,7 +271,7 @@ def sv_nummer_ok(text: str) -> bool:
 
 def nino_ok(text: str) -> bool:
     """UK National Insurance number: prefix letters from the allowed set, suffix A-D."""
-    s = re.sub(r"\s", "", text).upper()
+    s = compact(text)
     if not re.fullmatch(r"[A-Z]{2}\d{6}[A-D]", s):
         return False
     first, second = s[0], s[1]

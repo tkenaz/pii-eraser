@@ -28,6 +28,16 @@ class Rule:
     refine: Optional[Callable[[str], Optional[int]]] = None
 
 
+# Typesetting variants of the blank and the hyphen, one character each, so offsets stay valid. Rules are
+# written for " " and "-"; a no-break space inside a phone number or an IBAN is still the same value.
+_PLAIN = str.maketrans(
+    {
+        "\u00a0": " ", "\u2002": " ", "\u2003": " ", "\u2007": " ", "\u2009": " ", "\u200a": " ", "\u202f": " ",
+        "\u2010": "-", "\u2011": "-", "\u2212": "-",
+    }
+)  # fmt: skip
+
+
 class RegexDetector:
     def __init__(self, rules: Sequence[Rule], name: str = "regex"):
         self.name = name
@@ -35,6 +45,7 @@ class RegexDetector:
 
     def detect(self, text: str) -> List[Span]:
         spans: List[Span] = []
+        original, text = text, text.translate(_PLAIN)
         for rule, regex in self._compiled:
             for match in regex.finditer(text):
                 group = 1 if match.lastindex and match.group(1) else 0
@@ -50,7 +61,7 @@ class RegexDetector:
                     Span(
                         start=match.start(group),
                         end=match.start(group) + len(value),
-                        text=value,
+                        text=original[match.start(group) : match.start(group) + len(value)],
                         kind=rule.kind,
                         confidence=rule.confidence,
                         source=f"{self.name}:{rule.name}",
