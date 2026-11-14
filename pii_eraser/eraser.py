@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
+from pii_eraser.address_parts import join_address_parts
 from pii_eraser.detectors.base import Detector
 from pii_eraser.detectors.pii_rules import PII_RULES
 from pii_eraser.detectors.regex import RegexDetector
@@ -25,7 +26,7 @@ class Eraser:
     def __init__(self, stages: Sequence[Stage], whole_text: bool = False):
         self.stages = list(stages)
         # True: after the detectors, read the text as a whole. A name found once is masked wherever it stands
-        # again (repeats.py); name and address pieces found separately become one span.
+        # again (repeats.py); name and address pieces found separately become one span (address_parts.py).
         # Off for source code, where the same word is a class or a variable.
         self.whole_text = whole_text
 
@@ -67,6 +68,7 @@ class Eraser:
         found = resolve_overlaps(to_replace)
         if self.whole_text:
             found = join_name_parts(text, found + repeat_names(text, found))
+            found = join_address_parts(text, found)
         return found, signals
 
 

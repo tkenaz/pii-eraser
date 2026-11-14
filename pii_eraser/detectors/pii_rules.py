@@ -19,6 +19,7 @@ from pii_eraser.detectors.validators import (
     printed_as_one,
     steuer_id_ok,
     sv_nummer_ok,
+    uk_postcode_area_ok,
 )
 from pii_eraser.types import Kind
 
@@ -68,8 +69,14 @@ _DE_SUFFIX = (
     r"|zeile|promenade|anger|hof|park|feld|berg|brücke|wall|deich|kamp|redder|twiete|höhe|grund|aue|bogen|winkel|gärten|garten)"
 )
 _DE_STREET = (
-    rf"(?:(?:[{_UP}][{_LO}]*\.?-)+(?-i:Straße|Strasse|Str\.|Gasse|Weg|Allee|Platz|Ring|Damm|Ufer|Chaussee|Steig|Pfad|Markt|Graben|Kai|Zeile|Promenade|Anger|Hof|Park|Brücke)"
-    rf"|(?:[{_UP}][{_LO}]*\.?-)*[{_UP}][{_LO}]*?{_DE_SUFFIX}"
+    rf"(?:[{_UP}][{_LO}]*\.?-(?:[{_UP}{_LO}][{_LO}]*\.?-)*(?-i:Straße|Strasse|Str\.|Gasse|Weg|Allee|Platz|Ring|Damm|Ufer|Chaussee|Steig|Pfad|Markt|Graben|Kai|Zeile|Promenade|Anger|Hof|Park|Brücke)"
+    # the type first, with a genitive or a place after it: Straße des Friedens, Platz der Republik
+    rf"|(?-i:Straße|Strasse|Platz|Allee|Weg|Gasse|Ring|Damm|Ufer)[ \t]+(?:des|der|dem|den|am|im|zum|zur|vom)[ \t]+[{_UP}][{_LO}]+(?:[ \t]+[{_UP}][{_LO}]+)?"
+    # Swiss streets in French and Italian: Rue du Marché, Via alla Chiesa
+    rf"|(?-i:Via|Viale|Vicolo|Piazza|Corso|Rue|Chemin|Avenue|Route|Place|Quai|Boulevard|Impasse)"
+    rf"(?:[ \t]+(?:[{_UP}][{_LO}]+|de|du|des|la|le|les|della|del|dello|dei|di|alla|al|ai)|[ \t]+(?:d|l)['’][{_UP}][{_LO}]+){{1,4}}"
+    rf"|(?:(?-i:Alte|Neue|Obere|Untere|Große|Grosse|Kleine|Hintere|Vordere|Lange|Kurze|Breite|Hohe|Innere|Äußere)[rn]?[ \t]+)?"
+    rf"(?:[{_UP}][{_LO}]*\.?-)*[{_UP}][{_LO}]*?{_DE_SUFFIX}"
     rf"|[{_UP}][{_LO}]+[ \t]+(?-i:Straße|Strasse|Str\.|Gasse|Weg|Allee|Platz|Ring|Damm|Ufer|Chaussee|Steig|Pfad|Markt|Graben|Kai|Zeile|Promenade|Anger|Hof|Park|Brücke)"
     rf"|(?:Am|An[ \t]+der|An[ \t]+den|An[ \t]+dem|Auf[ \t]+der|Auf[ \t]+dem|Auf[ \t]+den|Im|In[ \t]+der|In[ \t]+den|Zum|Zur|Unter[ \t]+den|Hinter[ \t]+der|Hinter[ \t]+dem|Vor[ \t]+dem|Bei[ \t]+der)"
     rf"(?:[ \t]+[{_UP}][{_LO}]+){{1,3}})"
@@ -240,7 +247,7 @@ PII_RULES = [
         0.80,
         _I,
     ),
-    Rule("addr_unit", Kind.ADDRESS, r"(?:Apt|Apartment|Unit|Suite|Ste)\.?\s*#?\s*\d+\w?\b", 0.70, _I),
+    Rule("addr_unit", Kind.ADDRESS, r"(?:Apt|Apartment|Flat|Unit|Suite|Ste|Room)\.?\s*#?\s*\d+\w?\b", 0.70, _I),
     Rule(
         "addr_city_state_zip",
         Kind.ADDRESS,
@@ -298,6 +305,15 @@ PII_RULES = [
     ),
     Rule("addr_country_us", Kind.ADDRESS, r"\b(?:USA|U\.S\.A\.|United\s+States(?:\s+of\s+America)?)\b", 0.70, _I),
     Rule("postcode_uk", Kind.ADDRESS, r"\b(?-i:[A-Z]{1,2}\d{1,2}[A-Z]?\s?\d[A-Z]{2})\b", 0.75, _I),
+    # Typed in lower case in chats and exports; without capitals the postcode area has to exist.
+    Rule(
+        "postcode_uk_lower",
+        Kind.ADDRESS,
+        r"(?<![\w-])[a-z]{1,2}\d{1,2}[a-z]?[ ]?\d[a-z]{2}(?![\w-])",
+        0.70,
+        re.MULTILINE,
+        validate=uk_postcode_area_ok,
+    ),
     Rule(
         "addr_german",
         Kind.ADDRESS,
