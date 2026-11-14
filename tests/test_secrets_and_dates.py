@@ -85,6 +85,7 @@ def test_provider_prefix_with_a_random_tail_is_a_token(token):
         "chunk-vendors-2f8a9c3d1e5b7f4a.js",
         "abc_v1_a625799e31e0afddb275caf95ed5444ca99f29c2bb47f40f0bc8b94120bbbcd0",  # hex: a digest unless the format is known
         "tmp_AaAaAaAaAaAaAaAaAaAaAaAaAaAa111111",  # both cases and digits, nothing random
+        "tmp_" + "aB3dE6gH" * 4,  # eight symbols repeated: 3.0 bits per character, a pattern
         "arn_QuarterlyRevenueForecastWorkbookFinalVersion",  # letters only: a name, however long
         "tmp_aaaaaaaaaaaaaaaaaaaaaaaa111111111111",  # letters and digits, nothing random about them
     ],
