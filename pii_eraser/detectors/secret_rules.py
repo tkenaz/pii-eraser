@@ -56,6 +56,23 @@ def _random_for_its_length(value: str) -> bool:
     return _random_looking(value, min(4.2, 0.8 * math.log2(len(value))))
 
 
+# Prefixes that name a digest or an identifier, not a credential: sha512-... in a lock file, commit-..., id_...
+_NOT_A_TOKEN_PREFIX = re.compile(r"^(?:sha\d*|md5|crc\d*|uuid|guid|id|rev|commit|build|hash|etag|v\d+)$", re.IGNORECASE)
+
+
+def _prefixed_token(value: str) -> bool:
+    """`prefix_tail` or `prefix-tail` where the tail is random: letters and digits in quantity, almost no
+    separators (snake_case names and UUIDs are full of them), and a prefix that does not name a digest."""
+    match = re.match(r"([A-Za-z][A-Za-z0-9]{1,9}(?:_[A-Za-z0-9]{1,8})?)[_-](.+)$", value)
+    if not match or _NOT_A_TOKEN_PREFIX.match(match.group(1).split("_")[0]):
+        return False
+    tail = match.group(2)
+    separators = sum(c in "_-" for c in tail)
+    digits = sum(c.isdigit() for c in tail)
+    letters = sum(c.isalpha() for c in tail)
+    return separators * 12 <= len(tail) and digits >= 3 and letters >= 6 and shannon_entropy(tail) > 3.3
+
+
 def _ms(name, pattern, confidence=0.97, validate=None):
     return Rule(name, Kind.SECRET, pattern, confidence, _M, code_safe=True, validate=validate)
 
@@ -77,7 +94,19 @@ SECRET_RULES = [
     _ms("stripe_key", r"\b[rs]k_(?:live|test)_[A-Za-z0-9]{16,}\b"),
     _ms("jwt", r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}", 0.93),
     # Password inside a URL: only the password is replaced, the host stays readable.
-    _ms("url_credentials", r"\b[a-z][a-z0-9+.\-]*://[^\s:/@]+:([^\s:/@]{3,})@", 0.95, validate=_real_value),
+    # The user may be empty (redis://:password@host).
+    _ms("url_credentials", r"\b[a-z][a-z0-9+.\-]*://[^\s:/@]*:([^\s:/@]{3,})@", 0.95, validate=_real_value),
+    # Inside a connection string or a query: ...;Password=...; ...;AccountKey=...; ?user=x&password=... The
+    # value only, the rest of the string stays readable.
+    _ms(
+        "connection_string_secret",
+        r"[;?&]\s*(?i:password|passwd|pwd|account_?key|shared_?access_?key|shared_?access_?signature|secret|api_?key"
+        r"|access_?token|token|sig)\s*=\s*([^;&\s\"'<>]{8,})",
+        0.9,
+        validate=_real_value,
+    ),
+    # Authorization: Bearer <token>. Whatever follows the word is the credential, a webhook URL included.
+    _ms("bearer_token", r"(?i:\bBearer)[ \t]+([A-Za-z0-9._~+/=:\-]{20,})", 0.9, validate=_real_value),
     # password = "…", api_key: '…', SECRET_TOKEN="…" — the quoted value only.
     _ms(
         "secret_assignment",
@@ -92,6 +121,17 @@ SECRET_RULES = [
         r"""^[+\- ]?\s*(?:export\s+)?(?i:\w*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|credential)\w*)\s*[:=]\s*([^\s"'#]{12,})\s*$""",
         0.8,
         validate=lambda v: _real_value(v) and _random_for_its_length(v),
+    ),
+    # A provider prefix and a long random tail: hf_..., dop_v1_..., pypi-..., whsec_... New providers appear
+    # faster than rules for them; the shape is what they share.
+    Rule(
+        "prefixed_token",
+        Kind.SECRET,
+        r"(?<![\w./-])[A-Za-z][A-Za-z0-9]{1,9}(?:_[A-Za-z0-9]{1,8})?[_-][A-Za-z0-9_\-]{24,}(?![\w-])",
+        0.7,
+        _M,
+        code_safe=True,
+        validate=lambda v: _prefixed_token(v),
     ),
     # Anything quoted, long and random: hashes in hex stay (entropy <= 4.0).
     _ms("high_entropy_string", r"""["']([A-Za-z0-9+/=_\-]{24,})["']""", 0.6, validate=_random_looking),

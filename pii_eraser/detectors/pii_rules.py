@@ -10,6 +10,7 @@ import re
 from pii_eraser.detectors.regex import Rule
 from pii_eraser.detectors.validators import (
     card_span,
+    compact_date_ok,
     digits_between,
     iban_labeled_span,
     iban_printed_span,
@@ -93,6 +94,14 @@ _UK_STREET_TYPE = (
     r"|Terrace|Tce|Way|Yard|Mews|Row|Court|Ct|Hill|Park|Rise|Walk|View|Green|Parade|Wharf|Quay|Lodge|Gate)"
 )
 _UK_POSTCODE = r"[A-Z]{1,2}[0-9lIO][0-9A-Zl]?[ \t]?[0-9lIO][A-Z]{2}"
+
+_DAY = r"(?:0?[1-9]|[12]\d|3[01])"
+_YEAR = r"(?:19|20)\d{2}"
+_MONTH_NAME = r"(?:Jan(?:uary|uar|\.)?|Jän(?:ner|\.)?|Feb(?:ruary|ruar|er|\.)?|Mär(?:z|\.)?|Mar(?:ch|\.)?|Apr(?:il|\.)?|Mai|May|Jun(?:e|i|\.)?|Jul(?:y|i|\.)?|Aug(?:ust|\.)?|Sep(?:tember|t\.?|\.)?|Okt(?:ober|\.)?|Oct(?:ober|\.)?|Nov(?:ember|\.)?|Dez(?:ember|\.)?|Dec(?:ember|\.)?)"
+_BIRTH_LABEL = (
+    r"(?:Geburtsdatum|Geb\.\s*-?\s*Datum|\bgeb\.|\bgeboren(?:\s+am)?|\bDOB|D\.O\.B\.|date\s+of\s+birth|birth\s*date"
+    r"|\bborn(?:\s+on)?)"
+)
 
 # What is printed between the groups of one value: a blank, a hyphen, a dot, a slash. No-break and narrow
 # spaces arrive here as blanks (see RegexDetector). A tab divides table columns and is never part of a value.
@@ -201,6 +210,35 @@ PII_RULES = [
     Rule("dob_iso", Kind.DOB, r"\b(?:19|20)\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b", 0.80, _I),
     Rule("dob_us", Kind.DOB, r"\b(?:0[1-9]|1[0-2])[-/](?:0[1-9]|[12]\d|3[01])[-/](?:19|20)\d{2}\b", 0.75, _I),
     Rule("dob_eu", Kind.DOB, r"\b(?:0[1-9]|[12]\d|3[01])[-./](?:0[1-9]|1[0-2])[-./](?:19|20)\d{2}\b", 0.75, _I),
+    # A calendar date as people write it, whatever the layout: day, month by name or number, year. One rule
+    # per order of the parts, not per separator.
+    Rule(
+        "date_day_month_year",
+        Kind.DOB,
+        rf"(?<![\w/.-]){_DAY}(?:st|nd|rd|th)?(?:\.[ ]?|[ ]|-)(?:of[ ])?{_MONTH_NAME}[.,]?(?:[ ]|-){_YEAR}(?!\w)",
+        0.85,
+        _I,
+    ),
+    Rule(
+        "date_month_day_year",
+        Kind.DOB,
+        rf"(?<![\w/.-]){_MONTH_NAME}[ ]{_DAY}(?:st|nd|rd|th)?,?[ ]{_YEAR}(?!\w)",
+        0.85,
+        _I,
+    ),
+    Rule("date_numeric", Kind.DOB, rf"(?<![\w/.-]){_DAY}[./][ ]?(?:0?[1-9]|1[0-2])[./][ ]?{_YEAR}(?!\w)", 0.75, _I),
+    Rule("date_year_first", Kind.DOB, rf"(?<![\w/.-]){_YEAR}[/.](?:0[1-9]|1[0-2])[/.](?:0[1-9]|[12]\d|3[01])(?![\w/.])", 0.75, _I),
+    # After a birth label, forms too ambiguous to read as a date anywhere else: eight digits in a row, a
+    # two-digit year.
+    Rule(
+        "dob_labeled_compact",
+        Kind.DOB,
+        rf"{_BIRTH_LABEL}[:\s]+(\d{{8}}|{_DAY}[./-](?:0?[1-9]|1[0-2])[./-]\d{{2}})(?![\d./-])",
+        0.85,
+        _I,
+        code_safe=True,
+        validate=compact_date_ok,
+    ),
     Rule(
         "dob_text_mdy",
         Kind.DOB,
@@ -503,6 +541,16 @@ PII_RULES = [
         Kind.NATIONAL_ID,
         r"(?<![\w-])[A-Z]{2}(?:[ .\-]?\d{2}){3}[ .\-]?[A-D](?![\w])",
         0.90,
+        re.MULTILINE,
+        validate=printed_as_one(nino_ok),
+    ),
+    # In lower case only after its label: without capitals and without a check digit the shape proves nothing.
+    Rule(
+        "ni_uk_labeled",
+        Kind.NATIONAL_ID,
+        r"(?i:\bNI(?:NO)?(?:\s+(?:no|number|nr))?\.?|National\s+Insurance(?:\s+(?:no|number))?\.?)[:\s#]+"
+        r"((?i:[a-z]{2}(?:[ .\-]?\d{2}){3}[ .\-]?[a-d]))(?![\w])",
+        0.85,
         re.MULTILINE,
         validate=printed_as_one(nino_ok),
     ),

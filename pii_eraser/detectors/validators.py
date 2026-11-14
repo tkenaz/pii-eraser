@@ -297,6 +297,17 @@ def uk_postcode_area_ok(text: str) -> bool:
     return bool(match) and match.group(0).upper() in _UK_POSTCODE_AREAS
 
 
+def compact_date_ok(text: str) -> bool:
+    """Eight digits that read as a date (DDMMYYYY or YYYYMMDD) with a year people are born in; values that
+    carry separators were already shaped by their rule."""
+    if not (len(text) == 8 and text.isdigit()):
+        return True
+    for day, month, year in ((text[0:2], text[2:4], text[4:8]), (text[6:8], text[4:6], text[0:4])):
+        if 1 <= int(day) <= 31 and 1 <= int(month) <= 12 and 1900 <= int(year) <= 2029:
+            return True
+    return False
+
+
 def ip_ok(text: str) -> bool:
     """A routable or private address, not loopback, unspecified or a netmask."""
     try:
