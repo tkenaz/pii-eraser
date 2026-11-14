@@ -17,6 +17,7 @@ from pii_eraser.detectors.validators import (
     iban_span,
     ip_ok,
     nino_ok,
+    not_in_the_future,
     printed_as_one,
     steuer_id_ok,
     sv_nummer_ok,
@@ -97,6 +98,8 @@ _UK_POSTCODE = r"[A-Z]{1,2}[0-9lIO][0-9A-Zl]?[ \t]?[0-9lIO][A-Z]{2}"
 
 _DAY = r"(?:0?[1-9]|[12]\d|3[01])"
 _YEAR = r"(?:19|20)\d{2}"
+# A date does not go on: "3.9.1969-A", "1.2.2000/24" and "10.1.2024.5" are something else.
+_DATE_END = r"(?!\w|[./-]\w)"
 _MONTH_NAME = r"(?:Jan(?:uary|uar|\.)?|Jän(?:ner|\.)?|Feb(?:ruary|ruar|er|\.)?|Mär(?:z|\.)?|Mar(?:ch|\.)?|Apr(?:il|\.)?|Mai|May|Jun(?:e|i|\.)?|Jul(?:y|i|\.)?|Aug(?:ust|\.)?|Sep(?:tember|t\.?|\.)?|Okt(?:ober|\.)?|Oct(?:ober|\.)?|Nov(?:ember|\.)?|Dez(?:ember|\.)?|Dec(?:ember|\.)?)"
 _BIRTH_LABEL = (
     r"(?:Geburtsdatum|Geb\.\s*-?\s*Datum|\bgeb\.|\bgeboren(?:\s+am)?|\bDOB|D\.O\.B\.|date\s+of\s+birth|birth\s*date"
@@ -207,27 +210,45 @@ PII_RULES = [
     Rule("routing_bare", Kind.FINANCIAL, r"\b0[0-9]\d{7}\b", 0.60, _I),
     Rule("account_number", Kind.FINANCIAL, r"(?:account\s*(?:number|#|no)?)[:\s#]*\d{6,17}", 0.80, _I),
     # ---- date of birth
-    Rule("dob_iso", Kind.DOB, r"\b(?:19|20)\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b", 0.80, _I),
-    Rule("dob_us", Kind.DOB, r"\b(?:0[1-9]|1[0-2])[-/](?:0[1-9]|[12]\d|3[01])[-/](?:19|20)\d{2}\b", 0.75, _I),
-    Rule("dob_eu", Kind.DOB, r"\b(?:0[1-9]|[12]\d|3[01])[-./](?:0[1-9]|1[0-2])[-./](?:19|20)\d{2}\b", 0.75, _I),
+    # Without a label a date is taken for a date of birth, so it is not one that lies in a coming year.
+    Rule("dob_iso", Kind.DOB, r"\b(?:19|20)\d{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])\b", 0.80, _I, validate=not_in_the_future),
+    Rule("dob_us", Kind.DOB, r"\b(?:0[1-9]|1[0-2])[-/](?:0[1-9]|[12]\d|3[01])[-/](?:19|20)\d{2}\b", 0.75, _I, validate=not_in_the_future),
+    Rule("dob_eu", Kind.DOB, r"\b(?:0[1-9]|[12]\d|3[01])[-./](?:0[1-9]|1[0-2])[-./](?:19|20)\d{2}\b", 0.75, _I, validate=not_in_the_future),
     # A calendar date as people write it, whatever the layout: day, month by name or number, year. One rule
     # per order of the parts, not per separator.
     Rule(
         "date_day_month_year",
         Kind.DOB,
-        rf"(?<![\w/.-]){_DAY}(?:st|nd|rd|th)?(?:\.[ ]?|[ ]|-)(?:of[ ])?{_MONTH_NAME}[.,]?(?:[ ]|-){_YEAR}(?!\w)",
+        rf"(?<![\w/.-]){_DAY}(?:st|nd|rd|th)?(?:\.[ ]?|[ ]|-)(?:of[ ])?{_MONTH_NAME}[.,]?(?:[ ]|-){_YEAR}{_DATE_END}",
         0.85,
         _I,
+        validate=not_in_the_future,
     ),
     Rule(
         "date_month_day_year",
         Kind.DOB,
-        rf"(?<![\w/.-]){_MONTH_NAME}[ ]{_DAY}(?:st|nd|rd|th)?,?[ ]{_YEAR}(?!\w)",
+        rf"(?<![\w/.-]){_MONTH_NAME}[ ]{_DAY}(?:st|nd|rd|th)?,?[ ]{_YEAR}{_DATE_END}",
         0.85,
         _I,
+        validate=not_in_the_future,
     ),
-    Rule("date_numeric", Kind.DOB, rf"(?<![\w/.-]){_DAY}[./][ ]?(?:0?[1-9]|1[0-2])[./][ ]?{_YEAR}(?!\w)", 0.75, _I),
-    Rule("date_year_first", Kind.DOB, rf"(?<![\w/.-]){_YEAR}[/.](?:0[1-9]|1[0-2])[/.](?:0[1-9]|[12]\d|3[01])(?![\w/.])", 0.75, _I),
+    Rule(
+        "date_numeric",
+        Kind.DOB,
+        rf"(?<![\w/.-]){_DAY}[./][ ]?(?:0?[1-9]|1[0-2])[./][ ]?{_YEAR}{_DATE_END}",
+        0.75,
+        _I,
+        validate=not_in_the_future,
+    ),
+    # Year first with slashes; with dots it is a calendar version (2024.01.15).
+    Rule(
+        "date_year_first",
+        Kind.DOB,
+        rf"(?<![\w/.-]){_YEAR}/(?:0[1-9]|1[0-2])/(?:0[1-9]|[12]\d|3[01]){_DATE_END}",
+        0.75,
+        _I,
+        validate=not_in_the_future,
+    ),
     # After a birth label, forms too ambiguous to read as a date anywhere else: eight digits in a row, a
     # two-digit year.
     Rule(
@@ -245,6 +266,7 @@ PII_RULES = [
         r"\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+(?:19|20)\d{2}\b",
         0.85,
         _I,
+        validate=not_in_the_future,
     ),
     Rule(
         "dob_text_dmy",
@@ -252,6 +274,7 @@ PII_RULES = [
         r"\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:19|20)\d{2}\b",
         0.85,
         _I,
+        validate=not_in_the_future,
     ),
     Rule(
         "dob_labeled_en",

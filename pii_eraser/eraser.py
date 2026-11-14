@@ -1,5 +1,6 @@
 """Detectors in, one non-overlapping set of spans out, replaced through a session."""
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import List, Optional, Sequence
 
@@ -125,12 +126,19 @@ def merge_same_kind(spans: List[Span]) -> List[Span]:
                 )
             continue
         merged.append(span)
-    rest = [
-        s
-        for s in spans
-        if not _is_rule(s) and not any(r.kind is s.kind and r.start < s.end and s.start < r.end for r in merged)
-    ]
-    return merged + rest
+    by_kind: dict = {}
+    for rule in merged:  # per kind in start order and free of overlaps, as built above
+        by_kind.setdefault(rule.kind, []).append(rule)
+    starts = {kind: [r.start for r in rules] for kind, rules in by_kind.items()}
+
+    def under_a_rule(span: Span) -> bool:
+        rules = by_kind.get(span.kind)
+        if not rules:
+            return False
+        i = bisect_right(starts[span.kind], span.start)
+        return (i > 0 and rules[i - 1].end > span.start) or (i < len(rules) and rules[i].start < span.end)
+
+    return merged + [s for s in spans if not _is_rule(s) and not under_a_rule(s)]
 
 
 def resolve_overlaps(spans: List[Span]) -> List[Span]:
@@ -139,8 +147,11 @@ def resolve_overlaps(spans: List[Span]) -> List[Span]:
     postgres://app:pass@db.internal the email rule sees 'pass@db.internal' at the
     same confidence; the password must win."""
     spans = merge_same_kind(spans)
-    kept: List[Span] = []
+    kept: List[Span] = []  # in start order, free of overlaps
+    starts: List[int] = []
     for span in sorted(spans, key=lambda s: (-s.confidence, s.kind is not Kind.SECRET, -(s.end - s.start), s.start)):
-        if all(span.end <= k.start or k.end <= span.start for k in kept):
-            kept.append(span)
-    return sorted(kept, key=lambda s: s.start)
+        i = bisect_right(starts, span.start)
+        if (i == 0 or kept[i - 1].end <= span.start) and (i == len(kept) or span.end <= kept[i].start):
+            kept.insert(i, span)
+            starts.insert(i, span.start)
+    return kept

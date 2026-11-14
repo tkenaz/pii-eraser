@@ -141,3 +141,68 @@ def test_address_tail_stops_at_the_next_span():
     text = "Sitz: 54321 Beispielstadt, Deutschland GmbH"
     spans = [piece(text, "54321 Beispielstadt"), piece(text, "Deutschland GmbH", Kind.NAME)]
     assert [s.text for s in join_address_parts(text, spans)] == ["54321 Beispielstadt", "Deutschland GmbH"]
+
+
+# ---------------- second review: a list of addresses is a list
+
+
+@pytest.mark.parametrize("between", ["\n", ", ", " | ", ", Berlin Mitte, "])
+def test_two_streets_are_two_addresses(between):
+    text = f"Kunden: Tulpenweg 14{between}Nelkenweg 4{between}Asternring 3"
+    assert joined(text, "Tulpenweg 14", "Nelkenweg 4", "Asternring 3") == ["Tulpenweg 14", "Nelkenweg 4", "Asternring 3"]
+    assert len(addresses(text)) == 3
+
+
+def test_what_follows_a_postcode_is_the_next_address():
+    text = "Tulpenweg 14, 54321 Beispielstadt\nNelkenweg 4, 54322 Anderstadt\n"
+    assert addresses(text) == ["Tulpenweg 14, 54321 Beispielstadt", "Nelkenweg 4, 54322 Anderstadt"]
+    assert joined("54321 Beispielstadt, 54322 Anderstadt", "54321 Beispielstadt", "54322 Anderstadt") == [
+        "54321 Beispielstadt",
+        "54322 Anderstadt",
+    ]
+
+
+def test_address_over_two_lines_restores_to_itself():
+    text = "Neue Anschrift:\nTulpenweg 14\n54321 Beispielstadt\n\nEnde"
+    session = Eraser.for_prose().session()
+    erased = session.erase(text).text
+    assert "Tulpenweg" not in erased and session.restore(erased) == text
+
+
+def test_a_year_after_in_is_not_an_austrian_postcode():
+    text = "Gartenweg 3 in 2019 Neubau"
+    assert joined(text, "Gartenweg 3") == ["Gartenweg 3"]
+    text = "Gartenweg 3 in 2340 Musterdorf"
+    assert joined(text, "Gartenweg 3") == [text]
+
+
+def test_town_after_a_street_is_not_followed_by_a_sentence():
+    text = "Tulpenweg 14, 54321 Beispielstadt liegt am Fluss"
+    assert joined(text, "Tulpenweg 14") == ["Tulpenweg 14"]
+
+
+def test_street_takes_a_town_on_the_next_line_but_not_two_lines_down():
+    assert joined("Tulpenweg 14\n54321 Beispielstadt", "Tulpenweg 14") == ["Tulpenweg 14\n54321 Beispielstadt"]
+    assert joined("Tulpenweg 14\n\n54321 Beispielstadt", "Tulpenweg 14") == ["Tulpenweg 14"]
+
+
+def test_town_after_filling_longer_than_an_address_has_is_not_taken():
+    text = "Tulpenweg 14, 1, 2, 3, 4, 5, 6, 7, 8, 9, 54321 Beispielstadt"
+    assert joined(text, "Tulpenweg 14") == ["Tulpenweg 14"]
+
+
+def test_named_part_of_more_than_four_words_is_a_sentence():
+    text = "Rosebank, Old Mill Lane North Side Upper, MK1 4ZZ"
+    assert joined(text, "Rosebank", "MK1 4ZZ") == ["Rosebank", "MK1 4ZZ"]
+
+
+def test_joined_address_keeps_the_source_of_its_surer_piece():
+    text = "Tulpenweg 14, 54321 Beispielstadt"
+    spans = [piece(text, "Tulpenweg 14", confidence=0.6), piece(text, "54321 Beispielstadt", confidence=0.9)]
+    spans[0] = Span(spans[0].start, spans[0].end, spans[0].text, Kind.ADDRESS, 0.6, "test:weak")
+    (one,) = join_address_parts(text, spans)
+    assert (one.confidence, one.source) == (0.9, "test:piece")
+
+
+def test_town_tail_needs_its_dot():
+    assert joined("Sitz: 9000 St Gallenstein AG", "9000 St") == ["9000 St"]

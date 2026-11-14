@@ -30,10 +30,16 @@ _TOWN_AFTER = re.compile(
     _FILLING_PART
     + r"{0,10}?(?:(?:D|A|CH)-)?(?<![\d/])\d{4,5}[ ]"
     + _NOT_TOWN
-    + r"[A-ZÄÖÜ][\w.-]*(?:[ -][A-ZÄÖÜ][\w.-]*){0,2}",
+    + r"[A-ZÄÖÜ][\w.-]*(?:[ -][A-ZÄÖÜ][\w.-]*){0,2}(?![\w.-]|[ ][a-zäöü])",
     re.VERBOSE,
 )
 _STREET_END = re.compile(r"\d[a-zA-Z]?$")
+# The two sorts of piece. An address has one street with a house number and, after it, one postcode: two
+# streets side by side are two addresses, and so is whatever follows a postcode.
+_HOUSE_NUMBER = re.compile(r"[^\W\d_]\.?[ ]\d{1,4}[a-zA-Z]?(?!\d)(?![ ][A-ZÄÖÜ][a-zäöü])|^\d{1,4}[a-zA-Z]?[ ][A-Z]")
+_POSTCODE = re.compile(r"(?<!\d)\d{4,5}[ ][A-ZÄÖÜ]|\b[A-Za-z]{1,2}\d[\dA-Za-z]?[ ]?\d[A-Za-z]{2}\b")
+_UNIT = re.compile(r"(?:Apt|Apartment|Flat|Unit|Suite|Ste|Room|Top|Whg)\.?\s*#?\s*\d+\w?", re.IGNORECASE)
+_YEAR_LIKE = re.compile(r"\bin[ ](?:19|20)\d{2}[ ]")
 # A line or a comma-separated part made of capitalised words only, between two address pieces: the town
 # between street and postcode, the street between house name and town.
 _NAMED_PART = re.compile(r"[ \t]*[,\n]?[ \t]*(?:[A-ZÀ-Þ][\w'’.-]*[ \t]*){1,4}[,\n]?[ \t]*")
@@ -52,9 +58,19 @@ _TAILS = (
 )
 
 
+def _is_street(span: Span) -> bool:
+    """A street with its house number; "Flat 24" on its own is a part of one."""
+    return bool(_HOUSE_NUMBER.search(span.text)) and not _UNIT.fullmatch(span.text)
+
+
+def _one_address(last: Span, span: Span) -> bool:
+    """`span` can be the next piece of the address `last` belongs to."""
+    if _POSTCODE.search(last.text):
+        return not (_is_street(span) or _POSTCODE.search(span.text))
+    return not (_is_street(last) and _is_street(span))
+
+
 def _is_filling(gap: str) -> bool:
-    if gap.count("\n") > 2:
-        return False
     if len(gap) <= _FILLING_MAX and gap.count("\n") <= 1 and _FILLING.fullmatch(gap):
         return True
     return len(gap) <= _NAMED_PART_MAX and bool(_NAMED_PART.fullmatch(gap))
@@ -79,8 +95,8 @@ def _with_town(text: str, span: Span, limit: int) -> Span:
     match = _TOWN_AFTER.match(text, span.end)
     if not match or match.end() > limit or match.end() - span.end > _FILLING_MAX + 40:
         return span
-    if text.count("\n", span.end, match.end()) > 1:
-        return span
+    if text.count("\n", span.end, match.end()) > 1 or _YEAR_LIKE.search(text, span.end, match.end()):
+        return span  # "Gartenweg 3 in 2019 Neubau": a year, not an Austrian postcode
     end = match.end()
     return Span(start=span.start, end=end, text=text[span.start : end], kind=span.kind, confidence=span.confidence, source=span.source)
 
@@ -101,6 +117,7 @@ def join_address_parts(text: str, spans: List[Span]) -> List[Span]:
             and last.kind is Kind.ADDRESS
             and span.kind is Kind.ADDRESS
             and last.end <= span.start
+            and _one_address(last, span)
             and _is_filling(text[last.end : span.start])
         ):
             best = last if last.confidence >= span.confidence else span

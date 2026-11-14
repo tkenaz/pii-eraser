@@ -1,5 +1,6 @@
 """Checksums and statistics that turn a format match into a real value."""
 
+import datetime
 import ipaddress
 import math
 import re
@@ -292,9 +293,18 @@ _UK_POSTCODE_AREAS = frozenset(
 
 
 def uk_postcode_area_ok(text: str) -> bool:
-    """The letters a UK postcode starts with name a postcode area that exists."""
+    """The letters a UK postcode starts with name a postcode area that exists, and its second half is not an
+    ordinal ("room b1 2nd floor")."""
     match = re.match(r"[A-Za-z]{1,2}", text)
-    return bool(match) and match.group(0).upper() in _UK_POSTCODE_AREAS
+    if not match or match.group(0).upper() not in _UK_POSTCODE_AREAS:
+        return False
+    return not re.search(r"\d(?:st|nd|rd|th)$", text, re.IGNORECASE)
+
+
+def not_in_the_future(text: str) -> bool:
+    """Nobody was born in a coming year: a date whose year lies after this one is a deadline or a due date."""
+    years = re.findall(r"(?<!\d)(?:19|20)\d{2}(?!\d)", text)
+    return not years or int(years[-1]) <= datetime.date.today().year
 
 
 def compact_date_ok(text: str) -> bool:
