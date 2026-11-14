@@ -23,6 +23,9 @@ class Rule:
     # code profile.
     code_safe: bool = False
     validate: Optional[Callable[[str], bool]] = None
+    # Cuts a broad match to the real value: returns how many characters of it to keep, or None to drop it.
+    # The IBAN rule matches a run of groups and lets the country's registry length decide where it ends.
+    refine: Optional[Callable[[str], Optional[int]]] = None
 
 
 class RegexDetector:
@@ -36,12 +39,17 @@ class RegexDetector:
             for match in regex.finditer(text):
                 group = 1 if match.lastindex and match.group(1) else 0
                 value = match.group(group)
+                if rule.refine:
+                    keep = rule.refine(value)
+                    if keep is None:
+                        continue
+                    value = value[:keep]
                 if rule.validate and not rule.validate(value):
                     continue
                 spans.append(
                     Span(
                         start=match.start(group),
-                        end=match.end(group),
+                        end=match.start(group) + len(value),
                         text=value,
                         kind=rule.kind,
                         confidence=rule.confidence,

@@ -5,6 +5,7 @@ pii-eraser[gliner]`; the model downloads on first use.
 """
 
 import logging
+import re
 from typing import Dict, List, Optional, Sequence
 
 from pii_eraser.types import Kind, Span
@@ -37,6 +38,10 @@ LABEL_TO_KIND: Dict[str, Kind] = {
 }
 
 DEFAULT_LABELS = list(LABEL_TO_KIND)
+# Per-label thresholds over the default. GLiNER scores names it has seen rarely (most non-English names) low;
+# at 0.5 a third of German names went unmasked. Below 0.5 the generic phrases it also scores are caught by
+# the noise filter (role nouns, determiners, label words), not by the threshold.
+DEFAULT_LABEL_THRESHOLDS: Dict[str, float] = {"person": 0.3}
 
 # Role nouns, pronouns and bare titles that NER tags as person/organization but
 # that never identify anyone. Scrubbing them corrupts quotes ("[NAME_5] owning
@@ -180,6 +185,29 @@ GENERIC_TERMS = frozenset(
         "service",
         "server",
         "client id",
+        # German role nouns, departments and family roles: capitalised like names, never a name
+        "kunde", "kundin", "kunden", "mitarbeiter", "mitarbeiterin", "mitarbeitende", "sachbearbeiter",
+        "sachbearbeiterin", "geschäftsführer", "geschäftsführerin", "geschäftsführung", "ansprechpartner",
+        "ansprechpartnerin", "vorgesetzter", "vorgesetzte", "kollege", "kollegin", "kollegen", "teamleiter",
+        "teamleiterin", "abteilungsleiter", "abteilungsleiterin", "leiter", "leiterin", "inhaber", "inhaberin",
+        "vermieter", "vermieterin", "mieter", "mieterin", "eigentümer", "eigentümerin", "auftraggeber",
+        "auftragnehmer", "lieferant", "dienstleister", "arzt", "ärztin", "patient", "patientin", "versicherte",
+        "versicherter", "antragsteller", "antragstellerin", "empfänger", "empfängerin", "absender", "verfasser",
+        "bearbeiter", "bearbeiterin", "techniker", "technikerin", "entwickler", "entwicklerin", "administratorin",
+        "buchhaltung", "personalabteilung", "vertrieb", "einkauf", "support", "kundenservice", "kundendienst",
+        "hotline", "team", "herr", "frau", "herrn", "fahrer", "fahrerin", "nutzer", "nutzerin", "benutzer",
+        "benutzerin", "teilnehmer", "teilnehmerin", "vorstand", "aufsichtsrat", "betriebsrat", "gesellschafter",
+        "gesellschafterin", "steuerberater", "steuerberaterin", "rechtsanwalt", "rechtsanwältin", "notar",
+        "notarin", "gutachter", "sachverständiger", "pflegekraft", "hausarzt", "hausärztin", "facharzt",
+        "fachärztin", "ehegatte", "ehegattin", "ehefrau", "ehemann", "kind", "kinder", "tochter", "sohn",
+        "mutter", "vater", "azubi", "auszubildende", "praktikant", "praktikantin", "werkstudent", "werkstudentin",
+        "chef", "chefin", "projektleiter", "projektleiterin", "hausmeister", "hausverwaltung", "praxis",
+        "praxisteam", "krankenkasse", "versicherung",
+        # English roles and departments
+        "manager", "engineer", "team lead", "procurement", "hr", "finance", "accounting", "helpdesk",
+        "service desk", "colleague", "colleagues", "doctor", "nurse", "patient", "driver", "tenant", "landlord",
+        "applicant", "claimant", "policyholder", "insured", "account holder", "cardholder", "sales", "marketing",
+        "legal", "payroll", "wife", "husband", "spouse", "child", "daughter", "son", "mother", "father",
     }
 )
 
@@ -263,10 +291,35 @@ def is_generic_name_phrase(text: str, label: str) -> bool:
     return True
 
 
-def is_noise(text: str, label: str) -> bool:
+# Labels whose values are numbers: a hit without a digit is the field's name ("IBAN", "Steuer-ID",
+# "Kreditkarte"), not its value.
+_NUMERIC_LABELS = frozenset(
+    {"ssn", "tax_id", "passport_number", "drivers_license", "bank_account", "routing_number", "credit_card",
+     "phone_number", "date_of_birth"}
+)
+# German articles and determiners: standard written German puts none before a person's name, so
+# "der Bäcker", "ein Schreiber", "den Dietrich" are the trade, the clerk, the lock pick.
+_DE_DETERMINER = re.compile(
+    r"(?:^|[\s(\[\"'„])(?:der|die|das|den|dem|des|ein|eine|einen|einem|einer|eines|kein|keine|keinen|keinem|jeder|jede"
+    r"|jedes|jeden|dieser|diese|dieses|diesen|unser|unsere|unseren|unserem|beim|vom|zum|zur)\s+$",
+    re.IGNORECASE,
+)
+
+
+def is_noise(text: str, label: str, before: str = "") -> bool:
     low = text.lower().strip().strip(".,;:")
     if low in GENERIC_TERMS:
         return True
+    if label in _NUMERIC_LABELS and not any(c.isdigit() for c in text):
+        return True
+    if label == "email" and "@" not in text:
+        return True
+    if label == "person":
+        words = text.split()
+        if words and words[0].lower() in {"der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem"}:
+            return True
+        if len(words) == 1 and _DE_DETERMINER.search(before):
+            return True
     for article in ("the ", "a ", "an ", "such ", "said ", "any ", "each ", "every "):
         if low.startswith(article) and low[len(article) :] in GENERIC_TERMS:
             return True
@@ -286,10 +339,14 @@ class GlinerDetector:
         chunk_size: int = 1500,  # characters; the model truncates near 384 tokens
         overlap: int = 200,
         model=None,  # injected for tests
+        label_thresholds: Optional[Dict[str, float]] = None,
     ):
         self.model_id = model_id
         self.labels = list(labels or DEFAULT_LABELS)
         self.threshold = threshold
+        self.label_thresholds = dict(DEFAULT_LABEL_THRESHOLDS if label_thresholds is None else label_thresholds)
+        # The lowest bar any label uses; the eraser's stage must not cut below it again.
+        self.min_confidence = min([threshold, *self.label_thresholds.values()])
         self.chunk_size = chunk_size
         self.overlap = overlap
         self._model = model
@@ -311,9 +368,9 @@ class GlinerDetector:
         while start < len(text):
             end = min(start + self.chunk_size, len(text))
             chunk = text[start:end]
-            for entity in model.predict_entities(chunk, self.labels, threshold=self.threshold):
+            for entity in model.predict_entities(chunk, self.labels, threshold=self.min_confidence):
                 label, value = entity["label"], entity["text"]
-                if is_noise(value, label):
+                if entity["score"] < self.label_thresholds.get(label, self.threshold):
                     continue
                 local = entity.get("start")
                 if local is None or chunk[local : local + len(value)] != value:
@@ -321,6 +378,8 @@ class GlinerDetector:
                     if local == -1:
                         continue
                 abs_start = start + local
+                if is_noise(value, label, text[max(0, abs_start - 12) : abs_start]):
+                    continue
                 spans[(abs_start, value)] = Span(
                     start=abs_start,
                     end=abs_start + len(value),

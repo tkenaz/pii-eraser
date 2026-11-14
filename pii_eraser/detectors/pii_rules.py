@@ -8,7 +8,15 @@ broad. `code_safe` marks rules precise enough to run over source code.
 import re
 
 from pii_eraser.detectors.regex import Rule
-from pii_eraser.detectors.validators import iban_ok, luhn_ok
+from pii_eraser.detectors.validators import (
+    digits_between,
+    iban_span,
+    ip_ok,
+    luhn_ok,
+    nino_ok,
+    steuer_id_ok,
+    sv_nummer_ok,
+)
 from pii_eraser.types import Kind
 
 _I = re.IGNORECASE | re.MULTILINE
@@ -26,17 +34,81 @@ _NAME_WORD = r"[A-ZÀ-Ÿ][a-zà-ÿ]+"
 # The value is captured alone so the label stays readable.
 _HAS_DIGIT = r"(?=[A-Z0-9-]*\d)"
 
+# Names beyond ASCII: Latin-1, Latin Extended-A (Łukasz, Şahin) and Extended Additional (Phạm, Nguyễn).
+_UP = "A-ZÀ-ÖØ-Þ\u0100-\u017F\u1E00-\u1EFF"
+_LO = "a-zß-öø-ÿ\u0100-\u017F\u1E00-\u1EFF"
+# One name word: O'Connor, El-Amrani, Schmidt-Rottluff, Tanner's.
+_NW = rf"[{_UP}](?:['’][{_UP}])?[{_LO}]+(?:-[{_UP}][{_LO}]+)*"
+_NWS = rf"{_NW}(?:['’]s)?"  # street words: Tanner's Yard
+_PARTICLE = r"(?:van|von|de|der|den|du|da|di|del|della|dos|das|zu|ter|ten|al|el|bin|ibn|le|la)"
+_SURNAME = rf"(?:{_PARTICLE}\s+){{0,2}}{_NW}"
+_FULL = rf"{_NW}(?:[ \t]+{_SURNAME}){{0,2}}"
+_INITIAL_SURNAME = rf"[{_UP}]\.[ \t]?{_SURNAME}"
+# Last, First — as name lists and forms write it.
+_INVERTED = rf"{_SURNAME},[ \t]*{_NW}(?:[ \t]+{_NW})?"
+_NAME_END = r"(?=[ \t]*(?:[\n,;:()<|\"']|[ \t][-–—+][ \t]|$)|[ \t]{2,})"
+# A name written in capitals, as banks and forms print it: GISELA KÖNIG, MINH ĐỨC TRẦN.
+_FULL_UPPER = rf"[{_UP}]{{2,}}(?:-[{_UP}]{{2,}})*(?:[ \t]+[{_UP}]{{2,}}(?:-[{_UP}]{{2,}})*){{1,3}}"
+
+_MONTHS_EN = r"(?:January|February|March|April|May|June|July|August|September|October|November|December)"
+_MONTHS_DE = r"(?:Januar|Jänner|Februar|Feber|März|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)"
+_DATE_VALUE = (
+    r"(?:\d{1,2}[./-]\d{1,2}[./-](?:19|20)?\d{2}|(?:19|20)\d{2}-\d{2}-\d{2}"
+    rf"|\d{{1,2}}\.?[ \t]+(?:{_MONTHS_EN}|{_MONTHS_DE})[ \t]+(?:19|20)\d{{2}}"
+    rf"|{_MONTHS_EN}[ \t]+\d{{1,2}},?[ \t]+(?:19|20)\d{{2}})"
+)
+
+# German, Austrian and Swiss street names: compound (Lindenstraße), separate (Mariahilfer Straße),
+# hyphenated (Friedrich-Ebert-Allee, Bgm.-Smidt-Str.) and prepositional (Am Alten Markt, Im Rosengarten).
+_DE_SUFFIX = (
+    r"(?:straße|strasse|str\.|gasse|weg|allee|platz|ring|damm|ufer|chaussee|steig|stieg|pfad|markt|graben|kai"
+    r"|zeile|promenade|anger|hof|park|feld|berg|brücke|wall|deich|kamp|redder|twiete|höhe|grund|aue|bogen|winkel|gärten|garten)"
+)
+_DE_STREET = (
+    rf"(?:(?:[{_UP}][{_LO}]*\.?-)+(?-i:Straße|Strasse|Str\.|Gasse|Weg|Allee|Platz|Ring|Damm|Ufer|Chaussee|Steig|Pfad|Markt|Graben|Kai|Zeile|Promenade|Anger|Hof|Park|Brücke)"
+    rf"|(?:[{_UP}][{_LO}]*\.?-)*[{_UP}][{_LO}]*?{_DE_SUFFIX}"
+    rf"|[{_UP}][{_LO}]+[ \t]+(?-i:Straße|Strasse|Str\.|Gasse|Weg|Allee|Platz|Ring|Damm|Ufer|Chaussee|Steig|Pfad|Markt|Graben|Kai|Zeile|Promenade|Anger|Hof|Park|Brücke)"
+    rf"|(?:Am|An[ \t]+der|An[ \t]+den|An[ \t]+dem|Auf[ \t]+der|Auf[ \t]+dem|Auf[ \t]+den|Im|In[ \t]+der|In[ \t]+den|Zum|Zur|Unter[ \t]+den|Hinter[ \t]+der|Hinter[ \t]+dem|Vor[ \t]+dem|Bei[ \t]+der)"
+    rf"(?:[ \t]+[{_UP}][{_LO}]+){{1,3}})"
+)
+_HOUSE_NO = r"\d{1,4}(?:[ \t]?[a-zA-Z])?(?:[ \t]?[-–/][ \t]?\d{1,4}[a-zA-Z]?)?"
+_CITY_NAME = (
+    rf"[{_UP}][{_LO}]+(?:[- ][{_UP}][{_LO}]+)*"
+    rf"(?:[ \t]+(?:im|am|an[ \t]+der|in[ \t]+der|ob[ \t]+der|bei|upon|on)[ \t]+[{_UP}][{_LO}]+)?(?:[ \t]*\([^)\n]{{1,12}}\))?"
+)
+# Words that follow a five-digit number without being a town.
+_NOT_TOWN = r"(?!(?:Euro|Stück|Stk|Mitarbeiter|Mitarbeitende|Kunden|Nutzer|Zeilen|Einträge|Datensätze|Punkte|Tage|Jahre|Stunden|Minuten|Sekunden|Anfragen|Fehler|Dateien|Seiten|Wörter|Zeichen|Euro|Franken|Pfund|Requests|Users|Rows|Records|Items|Files|Pages|Words|Bytes|Points|Days|Years)\b)"
+_UK_STREET_TYPE = (
+    r"(?:Road|Rd|Street|St|Lane|Ln|Avenue|Ave|Close|Crescent|Cres|Drive|Dr|Gardens|Gdns|Grove|Place|Pl|Square|Sq"
+    r"|Terrace|Tce|Way|Yard|Mews|Row|Court|Ct|Hill|Park|Rise|Walk|View|Green|Parade|Wharf|Quay|Lodge|Gate)"
+)
+_UK_POSTCODE = r"[A-Z]{1,2}[0-9lIO][0-9A-Zl]?[ \t]?[0-9lIO][A-Z]{2}"
+
 PII_RULES = [
     # ---- email
     Rule("email_standard", Kind.EMAIL, r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b", 0.95, _I, code_safe=True),
     # ---- phone
+    # +49 / 0049, optional (0), area in brackets or not, groups split by blanks, dashes or a slash.
     Rule(
         "phone_intl",
         Kind.PHONE,
-        r"\+\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{2,4}[-.\s]?\d{2,4}(?:[-.\s]?\d{2,4})?",
+        r"(?<![\w+])(?:\+|00)[1-9]\d{0,2}[ \t./-]?(?:\(0\)[ \t]?)?\(?\d{1,12}\)?(?:(?:[ \t]*/[ \t]*|[ \t-])\d{1,8}){0,4}(?!\w|[.,]\d)",
         0.85,
         _I,
+        validate=digits_between(8, 16),
     ),
+    # National numbers with a trunk 0 (DE, AT, CH, UK): 030 23125057, (069) 90009-311, 0172 / 9973185,
+    # (0117) 496 0823, 020 7946 0958. Seven digits at least, so 01/2026 is not a phone.
+    Rule(
+        "phone_national",
+        Kind.PHONE,
+        r"(?<![\w+/.,-])\(?0[1-9]\d{0,4}\)?(?:[ \t]*/[ \t]*|[ \t]*-[ \t]*|[ \t]+)\d{2,8}(?:[ \t-]\d{1,6}){0,2}(?![\w/-]|[.,]\d)",
+        0.75,
+        _I,
+        validate=digits_between(7, 13),
+    ),
+    # German mobile numbers written without spaces: 0172..., 015x, 016x.
+    Rule("phone_mobile_de", Kind.PHONE, r"(?<![\w+])01[5-7]\d{8,9}(?!\w)", 0.80, _I),
     Rule("phone_us_parens", Kind.PHONE, r"\(?\d{3}\)[-.\s]?\d{3}[-.\s]?\d{4}\b", 0.80, _I),
     Rule("phone_us_dashed", Kind.PHONE, r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b", 0.80, _I),
     Rule("phone_swiss", Kind.PHONE, r"\b0\d{2}\s\d{3}\s\d{2}\s\d{2}\b", 0.85, _I),
@@ -64,7 +136,7 @@ PII_RULES = [
         "cc_visa",
         Kind.FINANCIAL,
         r"\b4\d{3}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b",
-        0.90,
+        0.97,
         _I,
         code_safe=True,
         validate=luhn_ok,
@@ -73,16 +145,28 @@ PII_RULES = [
         "cc_mastercard",
         Kind.FINANCIAL,
         r"\b5[1-5]\d{2}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b",
-        0.90,
+        0.97,
         _I,
         code_safe=True,
         validate=luhn_ok,
     ),
     Rule(
-        "cc_amex", Kind.FINANCIAL, r"\b3[47]\d{2}[-\s]?\d{6}[-\s]?\d{5}\b", 0.90, _I, code_safe=True, validate=luhn_ok
+        "cc_amex", Kind.FINANCIAL, r"\b3[47]\d{2}[-\s]?\d{6}[-\s]?\d{5}\b", 0.97, _I, code_safe=True, validate=luhn_ok
     ),
     Rule("cc_partial", Kind.FINANCIAL, r"(?:ending\s+in|last\s+(?:4|four)\s*(?:digits)?)[:\s]*\d{4}\b", 0.85, _I),
-    Rule("iban", Kind.FINANCIAL, r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b", 0.75, _I, code_safe=True, validate=iban_ok),
+    # A run of 4-character groups (blank or one line break between them, as printed and as OCR returns
+    # them); iban_span cuts it at the country's registry length and accepts it only on mod-97, after
+    # reading OCR confusions back. Checksum-proven, so it outranks an NER guess on the same characters.
+    Rule(
+        "iban",
+        Kind.FINANCIAL,
+        r"(?<![A-Za-z0-9])[A-Za-z0-9]{2}[0-9OISlB]{2}(?:(?:[ \t]?|[ \t]*\n[ \t]*)[A-Za-z0-9]{4}){2,7}"
+        r"(?:(?:[ \t]?|[ \t]*\n[ \t]*)[A-Za-z0-9]{1,4})?(?![A-Za-z0-9])",
+        0.98,
+        re.MULTILINE,
+        code_safe=True,
+        refine=iban_span,
+    ),
     Rule("account_labeled", Kind.FINANCIAL, r"(?:account|acct|konto)[:\s#]*\d{8,17}", 0.70, _I),
     Rule(
         "tax_id_labeled", Kind.FINANCIAL, r"(?:Tax\s*ID|EIN|Employer\s+ID)[:\s#]*\d{2}-\d{7}", 0.90, _I, code_safe=True
@@ -110,7 +194,12 @@ PII_RULES = [
         _I,
     ),
     Rule(
-        "dob_labeled_en", Kind.DOB, r"(?:DOB|date\s+of\s+birth|birthdate|born)[:\s]+[\d./-]+", 0.85, _I, code_safe=True
+        "dob_labeled_en",
+        Kind.DOB,
+        r"(?:\bDOB|D\.O\.B\.|date\s+of\s+birth|birth\s*date|\bborn(?:\s+on)?)[:\s]+(" + _DATE_VALUE + r")",
+        0.90,
+        _I,
+        code_safe=True,
     ),
     Rule(
         "dob_labeled_text",
@@ -120,7 +209,14 @@ PII_RULES = [
         _I,
         code_safe=True,
     ),
-    Rule("dob_labeled_de", Kind.DOB, r"(?:Geburtsdatum|Geb\.?|geboren\s+am?)[:\s]+[\d./-]+", 0.85, _I, code_safe=True),
+    Rule(
+        "dob_labeled_de",
+        Kind.DOB,
+        r"(?:Geburtsdatum|Geb\.\s*-?\s*Datum|\bgeb\.|\bgeboren(?:\s+am)?)[:\s]+(" + _DATE_VALUE + r")",
+        0.90,
+        _I,
+        code_safe=True,
+    ),
     # ---- address: conservative, require context
     Rule(
         "addr_us_street",
@@ -267,11 +363,10 @@ PII_RULES = [
     Rule(
         "name_titled",
         Kind.NAME,
-        r"\b(?:Mr|Mrs|Ms|Miss|Dr|Prof|Sir|Herr|Frau)\.?\s+("
-        + _NAME_WORD
-        + r"(?:\s+"
-        + _NAME_WORD
-        + r"){0,1})(?=[\s,.\n]|$)",
+        r"\b(?:Mr|Mrs|Ms|Mx|Miss|Dr|Prof|Sir|Herr|Herrn|Frau|Hr|Fr)\.?[ \t]+(?:(?:Dr|Prof)\.[ \t]+)?("
+        + rf"(?:{_PARTICLE}[ \t]+){{0,2}}"
+        + _FULL
+        + r")(?=[\s,.;:!?)\n'’]|$)",
         0.85,
         _CS,
         code_safe=True,
@@ -291,21 +386,39 @@ PII_RULES = [
         _CS,
     ),
     Rule(
+        "name_greeting",
+        Kind.NAME,
+        r"(?:^|(?<=[>\n]))[ \t]*(?i:hello|hi|hey|hallo|liebe|lieber|moin|servus|guten\s+(?:tag|morgen))[ \t]+"
+        r"(?!(?i:all|both|team|everyone|everybody|zusammen|there|folks|guys|leute|alle)\b)(" + _FULL + r")(?=[ \t]*[,!\n])",
+        0.80,
+        _CS,
+    ),
+    Rule(
+        "name_closing_inline",
+        Kind.NAME,
+        r"(?i:best|regards|thanks|cheers|grüße|gruß|mfg|lg|vg|danke)[,!.][ \t]+(" + _FULL + r"|" + _INITIAL_SURNAME + r")(?=[ \t]*(?:\n|$))",
+        0.80,
+        _CS,
+    ),
+    Rule(
         "name_dear",
         Kind.NAME,
         r"Dear\s+(?!Sir|Madam|Team|All|Customer|Support)(" + _NAME_WORD + r"(?:\s+" + _NAME_WORD + r")?)(?=\s*[,\n])",
         0.75,
         _CS,
     ),
+    # The line under a closing: "Thanks,\nGiorgos", "Danke\nShirin", "Mit freundlichen Grüßen\nH. Lindner".
     Rule(
         "name_signature",
         Kind.NAME,
-        r"(?:regards|sincerely|cheers|thanks|best)[,\s]*\n\s*("
-        + _NAME_WORD
-        + r"(?:\s+"
-        + _NAME_WORD
-        + r")?)(?=\s*[\n]|$)",
-        0.75,
+        r"(?i:regards|sincerely|cheers|thanks|thank\s+you|best(?:\s+wishes)?|danke(?:\s+schön)?|vielen\s+dank"
+        r"|gr[üu](?:ß|ss)e?n?|mfg|lg|vg|servus|ciao)[,!.]?[ \t]*\n[ \t]*(?:(?:i\.\s?A\.|i\.\s?V\.|gez\.)[ \t]*)?"
+        r"(?!(?:Ihr|Ihre|Euer|Eure|Dein|Deine|Your|The|Das|Die|Der|Team)\b)(?![^\n]*(?:[Tt]eam|Support|Service|Abteilung)\b)("
+        + _FULL
+        + r"|"
+        + _INITIAL_SURNAME
+        + r")(?=[ \t]*(?:\n|$|,))",
+        0.80,
         _CS,
     ),
     # Signature blocks: party names NER is most likely to miss (rare surnames).
@@ -328,6 +441,155 @@ PII_RULES = [
         Kind.NAME,
         r"(?i:by\s+and\s+(?:between|among)|\bbetween)\s+(?-i:([A-ZÀ-Ÿ][a-zà-ÿ'’.-]+(?:\s+[A-ZÀ-Ÿ][A-Za-zà-ÿ'’.-]*){1,3}))(?=\s*[,(\n])",
         0.80,
+        _CS,
+    ),
+
+    # ---- additions from the 2026-11 evaluation (DACH and UK formats)
+    # German tax id (IdNr): 11 digits, check digit and digit-repetition rule.
+    Rule(
+        "steuer_id",
+        Kind.NATIONAL_ID,
+        r"(?<![\d/.,-])[1-9]\d(?:[ \t]?\d{3}){3}(?![\d/-]|[.,]\d)",
+        0.90,
+        _I,
+        validate=steuer_id_ok,
+    ),
+    # German tax number (Steuernummer), state formats 2-3/3-4/4-5 digits with slashes.
+    Rule("steuernummer", Kind.NATIONAL_ID, r"(?<![\d/.])\d{2,3}/\d{3,4}/\d{4,5}(?![\d/]|\.\d)", 0.80, _I),
+    # German pension insurance number with its check digit, spaced or not: 43 191171 V 67 2.
+    Rule(
+        "sv_nummer",
+        Kind.NATIONAL_ID,
+        r"(?<![\w])\d{2}[ \t]?\d{6}[ \t]?[A-Z][ \t]?\d{2}[ \t]?\d(?![\w])",
+        0.95,
+        re.MULTILINE,
+        code_safe=True,
+        validate=sv_nummer_ok,
+    ),
+    # UK National Insurance number written in pairs: JG 37 28 59 A.
+    Rule(
+        "ni_uk_spaced",
+        Kind.NATIONAL_ID,
+        r"(?<![\w])[A-Z]{2}[ \t]?\d{2}[ \t]?\d{2}[ \t]?\d{2}[ \t]?[A-D](?![\w])",
+        0.90,
+        re.MULTILINE,
+        validate=nino_ok,
+    ),
+    # IP addresses. Version strings are kept out by what precedes them (v1.2.3.4, "version 1.2.3.4").
+    Rule(
+        "ip_v4",
+        Kind.IP,
+        r"(?<![\w.:/-])(?<!version )(?<!Version )(?<!VERSION )(?<!ver )(?<!v=)(?<!==)(?:\d{1,3}\.){3}\d{1,3}(?![\w-]|\.\d)",
+        0.85,
+        _I,
+        validate=ip_ok,
+    ),
+    Rule(
+        "ip_v6",
+        Kind.IP,
+        r"(?<![\w:.])[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{0,4}){2,7}(?![\w:])",
+        0.85,
+        re.MULTILINE,
+        validate=ip_ok,
+    ),
+    # ---- names in forms, lists and sign-offs
+    Rule(
+        "name_field",
+        Kind.NAME,
+        r"(?i:\b(?:name|vorname|nachname|empfänger(?:in)?|kontoinhaber(?:in)?|inhaber(?:in)?|patient(?:in)?|versicherte[rn]?"
+        r"|mitarbeiter(?:in)?|antragsteller(?:in)?|fahrer(?:in)?|ansprechpartner(?:in)?|kontakt|contact|bearbeiter(?:in)?"
+        r"|sachbearbeiter(?:in)?|absender(?:in)?|raised\s+by|requested\s+by|reported\s+by|submitted\s+by|approved\s+by"
+        r"|created\s+by|assigned\s+to|assignee|reporter|employee|customer|kunde|kundin|client|recipient|beneficiary"
+        r"|account\s+holder|card\s*holder|forename\(s\)|surname|full\s+name|policyholder|tenant|mieter(?:in)?"
+        r"|vermieter(?:in)?|teilnehmer(?:in)?|attendees?|verfasser(?:in)?|author)[\"']?[ \t]*:[ \t]*[\"']?"
+        r"|(?:raised|requested|reported|submitted|approved|created|signed|taken)\s+by[ \t]*:?[ \t]*)("
+        + _INVERTED
+        + r"|"
+        + _FULL_UPPER
+        + r"|"
+        + _FULL
+        + r"|"
+        + _INITIAL_SURNAME
+        + r")"
+        + _NAME_END,
+        0.85,
+        _CS,
+    ),
+    # Initial and surname after a signature mark or a separator: "gez. H. Lindner", "– G. Benedetti",
+    # "(A. Fernández)".
+    Rule(
+        "name_initial",
+        Kind.NAME,
+        r"(?:\bgez\.|\bi\.\s?A\.|\bi\.\s?V\.|[–—(/:|,]|\b(?:von|by|cc|mit|with|und|and|durch|für|for|an|to|update|mfg|gruß|best|regards)"
+        r"|\d{1,2}:\d{2}|^)[ \t]*(" + _INITIAL_SURNAME + r")" + _NAME_END,
+        0.80,
+        _CS,
+    ),
+    # "Last, First" items of a semicolon list (distribution lists, attendee lists).
+    Rule("name_list_inverted", Kind.NAME, r"(?:(?<=;)|(?<=:))[ \t]*(" + _INVERTED + r")(?=[ \t]*(?:;|\n|$))", 0.75, _CS),
+    Rule("name_list_inverted_first", Kind.NAME, r"(?<![\w,])(" + _INVERTED + r")(?=[ \t]*;)", 0.70, _CS),
+    # ---- addresses: DACH street + number, optionally with postcode and town; UK street lines and postcodes
+    Rule(
+        "addr_dach",
+        Kind.ADDRESS,
+        r"(?<![\w-])"
+        + _DE_STREET
+        + r"[ \t]+"
+        + _HOUSE_NO
+        + r"(?:(?:[ \t]*[,·|][ \t]*|[ \t]*\n[ \t]*|[ \t]+)(?:(?:D|A|CH)-)?\d{4,5}[ \t]+"
+        + _CITY_NAME
+        + r")?(?![\w])",
+        0.85,
+        _CS,
+    ),
+    # Postcode and town on their own, as an address line: at a line start or after a field separator, and the
+    # town ends the line or the field. German nouns are capitalised, so "24816 Tokens" mid-sentence must not count.
+    Rule(
+        "addr_postcode_town_de",
+        Kind.ADDRESS,
+        r"(?:(?<=^)|(?<=[,·|:]))[ \t]*((?:D-)?\d{5}[ \t]+" + _NOT_TOWN + _CITY_NAME + r")(?=[ \t]*(?:$|[,·|;)]))",
+        0.75,
+        _CS,
+    ),
+    Rule(
+        "addr_uk",
+        Kind.ADDRESS,
+        r"(?<![\w-])\d{1,4}[A-Z]?[ \t]+(?:" + _NWS + r"[ \t]+){1,3}" + _UK_STREET_TYPE + r"\b\.?"
+        r"(?:,[ \t]*" + _CITY_NAME + r")?(?:,?[ \t]+" + _UK_POSTCODE + r")?(?![\w])",
+        0.85,
+        _CS,
+    ),
+    Rule(
+        "postcode_uk_ocr",
+        Kind.ADDRESS,
+        r"(?:(?<![\w])|(?<=\\n))" + _UK_POSTCODE + r"(?![\w])",
+        0.70,
+        _CS,
+        validate=digits_between(1, 4),
+    ),
+    # Address parts in labelled fields and JSON keys (vendor master data, OCR'd invoices):
+    # PLZ: 70173, "postal_code": "5020", Ort: Münster, "town": "Leipzig", Street: Friedrich-Ebert-Allee 9c.
+    Rule(
+        "addr_field_postcode",
+        Kind.ADDRESS,
+        r"(?i:\b(?:plz|postleitzahl|post\s*code|postcode|postal[\s_]*code|zip(?:[\s_]*code)?)[\"']?)[ \t]*[:=][ \t]*[\"']?"
+        r"((?:(?:D|A|CH)-)?\d{4,5}|" + _UK_POSTCODE + r")(?![\w])",
+        0.85,
+        _CS,
+    ),
+    Rule(
+        "addr_field_town",
+        Kind.ADDRESS,
+        r"(?i:\b(?:ort|wohnort|stadt|town|city)[\"']?)[ \t]*[:=][ \t]*[\"']?(" + _CITY_NAME + r")(?=[\"']|[ \t]*(?:$|[,;\n]))",
+        0.80,
+        _CS,
+    ),
+    Rule(
+        "addr_field_street",
+        Kind.ADDRESS,
+        r"(?i:\b(?:straße|strasse|street|anschrift|adresse|address(?:\s*line\s*\d)?|zeile\s*\d|line\s*\d)[\"']?)[ \t]*[:=][ \t]*[\"']?"
+        r"(" + _DE_STREET + r"[ \t]+" + _HOUSE_NO + r"|\d{1,4}[A-Z]?[ \t]+(?:" + _NWS + r"[ \t]+){1,3}" + _UK_STREET_TYPE + r"\b\.?)(?![\w])",
+        0.85,
         _CS,
     ),
 ]

@@ -95,4 +95,26 @@ SECRET_RULES = [
     ),
     # Anything quoted, long and random: hashes in hex stay (entropy <= 4.0).
     _ms("high_entropy_string", r"""["']([A-Za-z0-9+/=_\-]{24,})["']""", 0.6, validate=_random_looking),
+    # ---- prose only (tickets, chats, emails): passwords people type into a sentence
+    # "Passwort Blau1827&nOn", "pw war …", "my password is …": the first token after the word that mixes
+    # upper case, lower case and digits.
+    Rule(
+        "password_prose",
+        Kind.SECRET,
+        r"(?i:passwor[dt]|kennwort|passwd|\bpwd?\b|passcode)[^\n]{0,60}?(?<![\w@])"
+        r"((?=[^\s,;()'\"<>]*[A-Z])(?=[^\s,;()'\"<>]*[a-z])(?=[^\s,;()'\"<>]*\d)[^\s,;()'\"<>]{8,64})",
+        0.85,
+        _M,
+        refine=lambda v: len(v.rstrip(".,")) if "@" not in v and "://" not in v else None,
+    ),
+    # A token shaped like a password on its own: upper, lower, digit and a symbol, no dots, slashes or @.
+    Rule(
+        "password_shape",
+        Kind.SECRET,
+        r"(?<![\w@./:\\?=&#%-])(?=[A-Za-z0-9!#$%&*?+~^_-]*[A-Z])(?=[A-Za-z0-9!#$%&*?+~^_-]*[a-z])"
+        r"(?=[A-Za-z0-9!#$%&*?+~^_-]*\d)(?=[A-Za-z0-9!#$%&*?+~^_-]*[!#$%&*?+~^])"
+        r"[A-Za-z0-9!#$%&*?+~^_-]{8,40}(?![\w!#$%&*?+~^@./:=-])",
+        0.70,
+        _M,
+    ),
 ]
