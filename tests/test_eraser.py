@@ -199,8 +199,16 @@ def test_ner_replaces_in_prose_but_only_signals_in_code():
 
 
 def test_ner_below_threshold_is_ignored():
-    entity = {"text": "Maria Garcia", "label": "person", "score": 0.3, "start": 3, "end": 15}
-    assert Eraser.for_prose(_ner(entity)).erase("by Maria Garcia").found == []
+    # person has its own, lower bar (0.3): names the model has rarely seen score low
+    person = {"text": "Maria Garcia", "label": "person", "score": 0.29, "start": 3, "end": 15}
+    assert Eraser.for_prose(_ner(person)).erase("by Maria Garcia").found == []
+    company = {"text": "Acme Holdings", "label": "company", "score": 0.45, "start": 3, "end": 16}
+    assert Eraser.for_prose(_ner(company)).erase("by Acme Holdings").found == []
+
+
+def test_ner_person_threshold_is_lower_than_the_rest():
+    person = {"text": "Maria Garcia", "label": "person", "score": 0.35, "start": 3, "end": 15}
+    assert Eraser.for_prose(_ner(person)).erase("by Maria Garcia").text == "by [NAME_1]"
 
 
 # ---------------- validators

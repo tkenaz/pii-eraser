@@ -19,6 +19,7 @@ class Kind(str, Enum):
     HEALTH_PLAN_ID = "HEALTH_PLAN_ID"
     NATIONAL_ID = "NATIONAL_ID"
     SECRET = "SECRET"  # keys, tokens, passwords, private keys
+    IP = "IP"  # IPv4 / IPv6 addresses
 
 
 @dataclass(frozen=True)

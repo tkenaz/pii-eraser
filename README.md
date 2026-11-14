@@ -52,6 +52,12 @@ Eraser.for_code(GlinerDetector())  # NER hits are only reported in result.signal
 On source code an NER model tags variable names and authors as people. In the
 code profile its hits are signals for a human, not replacements.
 
+NER names count from a score of 0.3, other labels from 0.5 (`GlinerDetector(label_thresholds=…)`):
+the model scores names it has rarely seen low. What it also tags at low scores — role nouns
+(EN/DE), a trade after a German article ("der Bäcker"), a field name without a digit ("IBAN") —
+is filtered. Where a rule and the model disagree on the edges of a phone number, IBAN or id, the
+rule's span is kept.
+
 ## CLI
 
 ```bash
@@ -68,12 +74,13 @@ checked, since a removed secret still sits in history.
 
 | Kind | Examples |
 |---|---|
-| `SECRET` | private key blocks, AWS / GitHub / GitLab / Slack / Anthropic / OpenAI / Google / Stripe keys, JWTs, passwords in URLs, `password = "…"` / `API_KEY=…` assignments, long random quoted strings |
-| `EMAIL`, `PHONE` | emails; international, US, Swiss, German phone formats |
-| `NAME` | labelled names, titles, salutations, signature blocks, contract parties; with NER: any person or organisation |
-| `ADDRESS` | US street / city / state / ZIP, UK postcodes, German streets, labelled addresses |
-| `FINANCIAL` | payment cards (Luhn), IBAN (mod-97), account, routing, tax ids |
-| `SSN`, `NATIONAL_ID`, `DOB`, `MRN`, `HEALTH_PLAN_ID` | US SSN, Swiss AHV, Spanish NIE/DNI, UK NI, passports, licences, dates of birth, medical record and insurance numbers (EN/DE) |
+| `SECRET` | private key blocks, AWS / GitHub / GitLab / Slack / Anthropic / OpenAI / Google / Stripe keys, JWTs, passwords in URLs, `password = "…"` / `API_KEY=…` assignments, long random quoted strings; in prose also passwords typed into a sentence ("Passwort …", "my password is …") |
+| `EMAIL`, `PHONE` | emails; international (`+49 (0)…`, `0049 …`), national DE/AT/CH/UK (`030 …`, `(069) …-…`, `0172 / …`, `020 7946 …`), US formats |
+| `NAME` | labelled names (also `Last, First` and in capitals), titles (Herr/Frau/Mr/Dr, particles like van den), greetings, sign-offs (EN/DE), initials (`gez. H. Lindner`), name lists, contract parties; with NER: any person or organisation |
+| `ADDRESS` | German, Austrian and Swiss streets with postcode and town, UK street lines and postcodes, address fields (`PLZ:`, `"town":`), US street / city / state / ZIP, labelled addresses |
+| `FINANCIAL` | payment cards (Luhn), IBAN (mod-97; printed in groups, across a line break, OCR confusions read back), account, routing, tax ids |
+| `IP` | IPv4 and IPv6 addresses (not loopback; version strings left alone) |
+| `SSN`, `NATIONAL_ID`, `DOB`, `MRN`, `HEALTH_PLAN_ID` | German Steuer-ID and SV-Nummer (check digits), Steuernummer, UK NI, US SSN, Swiss AHV, Spanish NIE/DNI, passports, licences, dates of birth (also with month names), medical record and insurance numbers (EN/DE) |
 
 References to secrets are left alone: `${DB_PASSWORD}`, `<your-token>`,
 `os.environ['SECRET']`, `changeme`.

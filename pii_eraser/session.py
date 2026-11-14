@@ -42,8 +42,14 @@ class Session:
         """Put originals back, e.g. into a model's answer shown to the owner."""
         if not self.mapping:
             return text
-        pattern = re.compile("|".join(re.escape(p) for p in sorted(self.mapping, key=len, reverse=True)))
-        return pattern.sub(lambda m: self.mapping[m.group(0)], text)
+        # erase() leaves the line breaks of a multi-line value after its placeholder (see _replace_all); the
+        # original brings them back itself, so they are taken out with the placeholder.
+        def one(placeholder: str) -> str:
+            breaks = self.mapping[placeholder].count("\n")
+            return re.escape(placeholder) + (f"(?:\n{{{breaks}}})?" if breaks else "")
+
+        pattern = re.compile("|".join(one(p) for p in sorted(self.mapping, key=len, reverse=True)))
+        return pattern.sub(lambda m: self.mapping[m.group(0).rstrip("\n")], text)
 
     def _register(self, surface: str, kind: Kind) -> None:
         if surface in self._by_surface:
