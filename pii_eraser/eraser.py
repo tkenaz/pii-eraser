@@ -7,6 +7,7 @@ from pii_eraser.detectors.base import Detector
 from pii_eraser.detectors.pii_rules import PII_RULES
 from pii_eraser.detectors.regex import RegexDetector
 from pii_eraser.detectors.secret_rules import SECRET_RULES
+from pii_eraser.repeats import join_name_parts, repeat_names
 from pii_eraser.session import Session
 from pii_eraser.types import EraseResult, Kind, Span
 
@@ -21,8 +22,12 @@ class Stage:
 
 
 class Eraser:
-    def __init__(self, stages: Sequence[Stage]):
+    def __init__(self, stages: Sequence[Stage], whole_text: bool = False):
         self.stages = list(stages)
+        # True: after the detectors, read the text as a whole. A name found once is masked wherever it stands
+        # again (repeats.py); name and address pieces found separately become one span.
+        # Off for source code, where the same word is a class or a variable.
+        self.whole_text = whole_text
 
     @classmethod
     def for_prose(cls, ner: Optional[Detector] = None) -> "Eraser":
@@ -31,7 +36,7 @@ class Eraser:
         if ner is not None:
             # A detector with its own per-label thresholds says how low its own bar goes.
             stages.append(Stage(ner, min_confidence=getattr(ner, "min_confidence", 0.5)))
-        return cls(stages)
+        return cls(stages, whole_text=True)
 
     @classmethod
     def for_code(cls, ner: Optional[Detector] = None) -> "Eraser":
@@ -59,7 +64,10 @@ class Eraser:
             for span in stage.detector.detect(text):
                 if span.confidence >= stage.min_confidence:
                     (to_replace if stage.replace else signals).append(span)
-        return resolve_overlaps(to_replace), signals
+        found = resolve_overlaps(to_replace)
+        if self.whole_text:
+            found = join_name_parts(text, found + repeat_names(text, found))
+        return found, signals
 
 
 class ErasingSession:
